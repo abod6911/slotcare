@@ -1,11 +1,10 @@
 -- ==============================================================================
 -- SlotCare Database Schema Migration (0001_initial_schema.sql)
--- Supabase / PostgreSQL Migration Script
--- Tables: clinics, staff, doctors, services, appointments, waitlist, slot_offers
--- Includes Indexes, Row Level Security (RLS), and Atomic Slot Claiming RPC Function
+-- Supabase / PostgreSQL Production Migration Script
+-- Multi-Tenant RLS Isolated by clinic_id, Optimized Indexes & Atomic Slot Claim RPC
 -- ==============================================================================
 
--- Enable UUID extension if not enabled
+-- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ------------------------------------------------------------------------------
@@ -27,8 +26,9 @@ CREATE TABLE IF NOT EXISTS public.staff (
     clinic_id UUID NOT NULL REFERENCES public.clinics(id) ON DELETE CASCADE,
     user_id UUID NOT NULL, -- references auth.users(id)
     full_name TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'receptionist')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+    role TEXT NOT NULL DEFAULT 'receptionist' CHECK (role IN ('admin', 'receptionist')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT uq_staff_user UNIQUE (user_id)
 );
 
 -- ------------------------------------------------------------------------------
@@ -111,9 +111,10 @@ CREATE TABLE IF NOT EXISTS public.slot_offers (
 );
 
 -- ------------------------------------------------------------------------------
--- Indexes for Performance & Instant Querying
+-- Performance Indexes
 -- ------------------------------------------------------------------------------
-CREATE INDEX IF NOT EXISTS idx_staff_clinic_user ON public.staff(clinic_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_staff_user ON public.staff(user_id);
+CREATE INDEX IF NOT EXISTS idx_staff_clinic ON public.staff(clinic_id);
 CREATE INDEX IF NOT EXISTS idx_doctors_clinic ON public.doctors(clinic_id) WHERE is_active = true;
 CREATE INDEX IF NOT EXISTS idx_services_clinic ON public.services(clinic_id) WHERE is_active = true;
 CREATE INDEX IF NOT EXISTS idx_appointments_clinic_time ON public.appointments(clinic_id, start_time);
@@ -123,7 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_slot_offers_token ON public.slot_offers(token);
 CREATE INDEX IF NOT EXISTS idx_slot_offers_appointment ON public.slot_offers(appointment_id);
 
 -- ------------------------------------------------------------------------------
--- Row Level Security (RLS) Configuration
+-- Row Level Security (RLS) Configuration & Helper Functions
 -- ------------------------------------------------------------------------------
 ALTER TABLE public.clinics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.staff ENABLE ROW LEVEL SECURITY;
@@ -133,8 +134,8 @@ ALTER TABLE public.appointments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.waitlist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.slot_offers ENABLE ROW LEVEL SECURITY;
 
--- Helper security function to get clinic_id of authenticated staff
-CREATE OR REPLACE FUNCTION public.get_auth_staff_clinic_id()
+-- Helper security function to get clinic_id of the currently authenticated staff member
+CREATE OR REPLACE FUNCTION public.get_user_clinic_id()
 RETURNS UUID
 LANGUAGE sql
 STABLE
@@ -144,32 +145,74 @@ AS $$
     SELECT clinic_id FROM public.staff WHERE user_id = auth.uid() LIMIT 1;
 $$;
 
--- RLS Policies for Staff Access (Scoped to their Clinic)
-CREATE POLICY staff_clinic_access ON public.clinics
-    FOR ALL USING (id = public.get_auth_staff_clinic_id());
+-- Grant EXECUTE on helper to authenticated users
+GRANT EXECUTE ON FUNCTION public.get_user_clinic_id() TO authenticated;
 
-CREATE POLICY staff_self_access ON public.staff
-    FOR ALL USING (clinic_id = public.get_auth_staff_clinic_id());
+-- RLS: clinics table
+CREATE POLICY clinics_select_policy ON public.clinics
+    FOR SELECT TO authenticated
+    USING (id = (SELECT public.get_user_clinic_id()));
 
-CREATE POLICY doctors_clinic_access ON public.doctors
-    FOR ALL USING (clinic_id = public.get_auth_staff_clinic_id());
+CREATE POLICY clinics_insert_policy ON public.clinics
+    FOR INSERT TO authenticated
+    WITH CHECK (true);
 
-CREATE POLICY services_clinic_access ON public.services
-    FOR ALL USING (clinic_id = public.get_auth_staff_clinic_id());
+CREATE POLICY clinics_update_policy ON public.clinics
+    FOR UPDATE TO authenticated
+    USING (id = (SELECT public.get_user_clinic_id()))
+    WITH CHECK (id = (SELECT public.get_user_clinic_id()));
 
-CREATE POLICY appointments_clinic_access ON public.appointments
-    FOR ALL USING (clinic_id = public.get_auth_staff_clinic_id());
+-- RLS: staff table
+CREATE POLICY staff_select_policy ON public.staff
+    FOR SELECT TO authenticated
+    USING (
+        clinic_id = (SELECT public.get_user_clinic_id()) 
+        OR user_id = (SELECT auth.uid())
+    );
 
-CREATE POLICY waitlist_clinic_access ON public.waitlist
-    FOR ALL USING (clinic_id = public.get_auth_staff_clinic_id());
+CREATE POLICY staff_insert_policy ON public.staff
+    FOR INSERT TO authenticated
+    WITH CHECK (user_id = (SELECT auth.uid()));
 
-CREATE POLICY slot_offers_clinic_access ON public.slot_offers
-    FOR ALL USING (clinic_id = public.get_auth_staff_clinic_id());
+CREATE POLICY staff_update_policy ON public.staff
+    FOR UPDATE TO authenticated
+    USING (clinic_id = (SELECT public.get_user_clinic_id()))
+    WITH CHECK (clinic_id = (SELECT public.get_user_clinic_id()));
 
--- Public Access Policy for Slot Offers (Token-based verification for patients)
--- Allows public read/claim using the unguessable secure token without login
-CREATE POLICY public_token_view_offer ON public.slot_offers
-    FOR SELECT USING (true);
+-- RLS: doctors table
+CREATE POLICY doctors_all_policy ON public.doctors
+    FOR ALL TO authenticated
+    USING (clinic_id = (SELECT public.get_user_clinic_id()))
+    WITH CHECK (clinic_id = (SELECT public.get_user_clinic_id()));
+
+-- RLS: services table
+CREATE POLICY services_all_policy ON public.services
+    FOR ALL TO authenticated
+    USING (clinic_id = (SELECT public.get_user_clinic_id()))
+    WITH CHECK (clinic_id = (SELECT public.get_user_clinic_id()));
+
+-- RLS: appointments table
+CREATE POLICY appointments_all_policy ON public.appointments
+    FOR ALL TO authenticated
+    USING (clinic_id = (SELECT public.get_user_clinic_id()))
+    WITH CHECK (clinic_id = (SELECT public.get_user_clinic_id()));
+
+-- RLS: waitlist table
+CREATE POLICY waitlist_all_policy ON public.waitlist
+    FOR ALL TO authenticated
+    USING (clinic_id = (SELECT public.get_user_clinic_id()))
+    WITH CHECK (clinic_id = (SELECT public.get_user_clinic_id()));
+
+-- RLS: slot_offers table (Staff full access)
+CREATE POLICY slot_offers_staff_policy ON public.slot_offers
+    FOR ALL TO authenticated
+    USING (clinic_id = (SELECT public.get_user_clinic_id()))
+    WITH CHECK (clinic_id = (SELECT public.get_user_clinic_id()));
+
+-- RLS: slot_offers table (Public anonymous access for patient offer viewing by unguessable token)
+CREATE POLICY slot_offers_public_select ON public.slot_offers
+    FOR SELECT TO anon
+    USING (status = 'pending' AND expires_at > timezone('utc'::text, now()));
 
 -- ------------------------------------------------------------------------------
 -- Atomic Slot Claiming RPC Function (Race-Condition Free)
@@ -178,6 +221,7 @@ CREATE OR REPLACE FUNCTION public.claim_slot_offer(offer_token TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_offer RECORD;
@@ -261,3 +305,6 @@ BEGIN
     );
 END;
 $$;
+
+-- Allow anon and authenticated roles to invoke the atomic claim function
+GRANT EXECUTE ON FUNCTION public.claim_slot_offer(TEXT) TO anon, authenticated;

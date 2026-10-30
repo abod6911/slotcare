@@ -2,10 +2,10 @@
 
 // ==============================================================================
 // SlotCare Centralized Application State Provider
-// Realistic Dental Clinic Mock Store & In-Memory State Machine
+// Enhanced for Phase 2: Live Supabase Integration + Multi-Tenant Fallback
 // ==============================================================================
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
   Clinic,
   Doctor,
@@ -17,8 +17,11 @@ import {
   RecoveryStats,
   Staff,
 } from '@/types/database.types';
+import { isSupabaseConfigured, createClient } from '@/lib/supabase/client';
+import { clinicService } from '@/lib/services/clinic-service';
 
 export interface SlotCareContextType {
+  isDemoMode: boolean;
   clinic: Clinic;
   staff: Staff;
   doctors: Doctor[];
@@ -30,6 +33,14 @@ export interface SlotCareContextType {
   stats: RecoveryStats;
   
   // Actions
+  updateClinic: (updates: Partial<Clinic>) => Promise<{ success: boolean; error?: string }>;
+  addDoctor: (doctor: Omit<Doctor, 'id' | 'clinic_id' | 'created_at'>) => Promise<{ success: boolean; error?: string }>;
+  editDoctor: (id: string, updates: Partial<Doctor>) => Promise<{ success: boolean; error?: string }>;
+  addService: (service: Omit<Service, 'id' | 'clinic_id' | 'created_at'>) => Promise<{ success: boolean; error?: string }>;
+  editService: (id: string, updates: Partial<Service>) => Promise<{ success: boolean; error?: string }>;
+  signOut: () => Promise<void>;
+  refreshLiveClinicData: () => Promise<void>;
+
   cancelAppointment: (appointmentId: string) => void;
   createAppointment: (appointment: Omit<Appointment, 'id' | 'clinic_id' | 'created_at'>) => void;
   addToWaitlist: (entry: Omit<WaitlistEntry, 'id' | 'clinic_id' | 'created_at' | 'status'>) => void;
@@ -52,7 +63,7 @@ const SlotCareContext = createContext<SlotCareContextType | undefined>(undefined
 // Initial Realistic Dental Clinic Mock Data (عيادة سمايل لطب الأسنان)
 // ------------------------------------------------------------------------------
 
-const CLINIC_ID = 'clinic_smile_01';
+const CLINIC_ID = 'a0000000-0000-0000-0000-000000000001';
 
 const INITIAL_CLINIC: Clinic = {
   id: CLINIC_ID,
@@ -73,7 +84,7 @@ const INITIAL_STAFF: Staff = {
 
 const INITIAL_DOCTORS: Doctor[] = [
   {
-    id: 'doc_ahmed',
+    id: 'b0000000-0000-0000-0000-000000000001',
     clinic_id: CLINIC_ID,
     full_name: 'د. أحمد المنصور',
     specialty: 'جراحة وزراعة الأسنان',
@@ -82,7 +93,7 @@ const INITIAL_DOCTORS: Doctor[] = [
     created_at: '2026-01-01T08:00:00Z',
   },
   {
-    id: 'doc_sarah',
+    id: 'b0000000-0000-0000-0000-000000000002',
     clinic_id: CLINIC_ID,
     full_name: 'د. سارة القحطاني',
     specialty: 'تقويم الأسنان وتجميل الابتسامة',
@@ -91,7 +102,7 @@ const INITIAL_DOCTORS: Doctor[] = [
     created_at: '2026-01-01T08:00:00Z',
   },
   {
-    id: 'doc_khalid',
+    id: 'b0000000-0000-0000-0000-000000000003',
     clinic_id: CLINIC_ID,
     full_name: 'د. خالد العتيبي',
     specialty: 'علاج الجذور وحشو العصب المجهري',
@@ -100,7 +111,7 @@ const INITIAL_DOCTORS: Doctor[] = [
     created_at: '2026-01-01T08:00:00Z',
   },
   {
-    id: 'doc_layla',
+    id: 'b0000000-0000-0000-0000-000000000004',
     clinic_id: CLINIC_ID,
     full_name: 'د. ليلى الشمري',
     specialty: 'طب أسنان الأطفال والعناية الوقائية',
@@ -112,7 +123,7 @@ const INITIAL_DOCTORS: Doctor[] = [
 
 const INITIAL_SERVICES: Service[] = [
   {
-    id: 'srv_cleaning',
+    id: 'c0000000-0000-0000-0000-000000000001',
     clinic_id: CLINIC_ID,
     name: 'تنظيف وتلميع الأسنان وإزالة الجير',
     duration_minutes: 30,
@@ -121,7 +132,7 @@ const INITIAL_SERVICES: Service[] = [
     created_at: '2026-01-01T08:00:00Z',
   },
   {
-    id: 'srv_rootcanal',
+    id: 'c0000000-0000-0000-0000-000000000002',
     clinic_id: CLINIC_ID,
     name: 'حشو عصب وجذور متقدم بالمجهر',
     duration_minutes: 60,
@@ -130,16 +141,16 @@ const INITIAL_SERVICES: Service[] = [
     created_at: '2026-01-01T08:00:00Z',
   },
   {
-    id: 'srv_ortho',
+    id: 'c0000000-0000-0000-0000-000000000003',
     clinic_id: CLINIC_ID,
-    name: 'استشارة وفحص تقويم الأسنان الشفاف',
+    name: 'فحص واستشارة تقويم الأسنان الشفاف',
     duration_minutes: 45,
     price: 350,
     is_active: true,
     created_at: '2026-01-01T08:00:00Z',
   },
   {
-    id: 'srv_whitening',
+    id: 'c0000000-0000-0000-0000-000000000004',
     clinic_id: CLINIC_ID,
     name: 'جلسة تبييض الأسنان بالليزر (زووم)',
     duration_minutes: 60,
@@ -147,9 +158,17 @@ const INITIAL_SERVICES: Service[] = [
     is_active: true,
     created_at: '2026-01-01T08:00:00Z',
   },
+  {
+    id: 'c0000000-0000-0000-0000-000000000005',
+    clinic_id: CLINIC_ID,
+    name: 'حشوة تجميلية كمبوزيت للأسنان الأمامية',
+    duration_minutes: 45,
+    price: 400,
+    is_active: true,
+    created_at: '2026-01-01T08:00:00Z',
+  },
 ];
 
-// Helper to get formatted timestamps for "today"
 function getTodayDateString(hours: number, minutes: number = 0): string {
   const d = new Date();
   d.setHours(hours, minutes, 0, 0);
@@ -157,27 +176,25 @@ function getTodayDateString(hours: number, minutes: number = 0): string {
 }
 
 const INITIAL_APPOINTMENTS: Appointment[] = [
-  // Primary Showcase Slot: 4:00 PM cancelled slot with Dr. Ahmed for Cleaning
   {
     id: 'appt_target_4pm',
     clinic_id: CLINIC_ID,
-    doctor_id: 'doc_ahmed',
-    service_id: 'srv_cleaning',
+    doctor_id: 'b0000000-0000-0000-0000-000000000001',
+    service_id: 'c0000000-0000-0000-0000-000000000001',
     patient_name: 'محمد العمري',
     patient_phone: '0541122334',
-    start_time: getTodayDateString(16, 0), // 4:00 PM today
-    end_time: getTodayDateString(16, 30),   // 4:30 PM today
+    start_time: getTodayDateString(16, 0),
+    end_time: getTodayDateString(16, 30),
     status: 'cancelled',
-    cancelled_at: new Date(Date.now() - 25 * 60 * 1000).toISOString(), // 25 mins ago
+    cancelled_at: new Date(Date.now() - 25 * 60 * 1000).toISOString(),
     recovered_from_appointment_id: null,
     created_at: '2026-10-30T10:00:00Z',
   },
-  // Active Schedule for Doctor Ahmed
   {
     id: 'appt_ahmed_1',
     clinic_id: CLINIC_ID,
-    doctor_id: 'doc_ahmed',
-    service_id: 'srv_whitening',
+    doctor_id: 'b0000000-0000-0000-0000-000000000001',
+    service_id: 'c0000000-0000-0000-0000-000000000004',
     patient_name: 'سلطان القاسمي',
     patient_phone: '0501239874',
     start_time: getTodayDateString(14, 0),
@@ -186,23 +203,10 @@ const INITIAL_APPOINTMENTS: Appointment[] = [
     created_at: '2026-10-29T14:00:00Z',
   },
   {
-    id: 'appt_ahmed_3',
-    clinic_id: CLINIC_ID,
-    doctor_id: 'doc_ahmed',
-    service_id: 'srv_rootcanal',
-    patient_name: 'بندر الشريف',
-    patient_phone: '0559988771',
-    start_time: getTodayDateString(17, 30),
-    end_time: getTodayDateString(18, 30),
-    status: 'scheduled',
-    created_at: '2026-10-30T11:00:00Z',
-  },
-  // Dr. Sarah appointments
-  {
     id: 'appt_sarah_1',
     clinic_id: CLINIC_ID,
-    doctor_id: 'doc_sarah',
-    service_id: 'srv_ortho',
+    doctor_id: 'b0000000-0000-0000-0000-000000000002',
+    service_id: 'c0000000-0000-0000-0000-000000000003',
     patient_name: 'ريم العبدالله',
     patient_phone: '0507744112',
     start_time: getTodayDateString(15, 0),
@@ -211,54 +215,27 @@ const INITIAL_APPOINTMENTS: Appointment[] = [
     created_at: '2026-10-28T09:00:00Z',
   },
   {
-    id: 'appt_sarah_2',
-    clinic_id: CLINIC_ID,
-    doctor_id: 'doc_sarah',
-    service_id: 'srv_ortho',
-    patient_name: 'منى الشهري',
-    patient_phone: '0543322119',
-    start_time: getTodayDateString(16, 30),
-    end_time: getTodayDateString(17, 15),
-    status: 'scheduled',
-    created_at: '2026-10-29T12:00:00Z',
-  },
-  // Dr. Khalid appointments
-  {
     id: 'appt_khalid_1',
     clinic_id: CLINIC_ID,
-    doctor_id: 'doc_khalid',
-    service_id: 'srv_rootcanal',
+    doctor_id: 'b0000000-0000-0000-0000-000000000003',
+    service_id: 'c0000000-0000-0000-0000-000000000002',
     patient_name: 'طارق الحربي',
     patient_phone: '0562211445',
-    start_time: getTodayDateString(16, 0),
-    end_time: getTodayDateString(17, 0),
+    start_time: getTodayDateString(17, 0),
+    end_time: getTodayDateString(18, 0),
     status: 'scheduled',
     created_at: '2026-10-28T16:00:00Z',
-  },
-  // Dr. Layla appointments
-  {
-    id: 'appt_layla_1',
-    clinic_id: CLINIC_ID,
-    doctor_id: 'doc_layla',
-    service_id: 'srv_cleaning',
-    patient_name: 'الطفل سعود الناصر',
-    patient_phone: '0556677889',
-    start_time: getTodayDateString(17, 0),
-    end_time: getTodayDateString(17, 30),
-    status: 'scheduled',
-    created_at: '2026-10-29T10:00:00Z',
   },
 ];
 
 const INITIAL_WAITLIST: WaitlistEntry[] = [
-  // Candidate 1: Exact Match (Wants today, after 3 PM, Dr. Ahmed or any)
   {
     id: 'wl_01',
     clinic_id: CLINIC_ID,
     patient_name: 'عبدالعزيز التميمي',
     patient_phone: '0551234567',
-    service_id: 'srv_cleaning',
-    preferred_doctor_id: 'doc_ahmed',
+    service_id: 'c0000000-0000-0000-0000-000000000001',
+    preferred_doctor_id: 'b0000000-0000-0000-0000-000000000001',
     preferred_days: ['اليوم', 'السبت', 'الأحد'],
     preferred_time_start: '15:00',
     preferred_time_end: '19:00',
@@ -267,14 +244,13 @@ const INITIAL_WAITLIST: WaitlistEntry[] = [
     notes: 'ألم خفيف ويرغب في موعد عاجل اليوم إذا توفر شاغر',
     created_at: '2026-10-31T01:10:00Z',
   },
-  // Candidate 2: Exact/High Match (Flexible doctor, prefers afternoon)
   {
     id: 'wl_02',
     clinic_id: CLINIC_ID,
     patient_name: 'فاطمة الشهري',
     patient_phone: '0509876543',
-    service_id: 'srv_cleaning',
-    preferred_doctor_id: null, // Any doctor
+    service_id: 'c0000000-0000-0000-0000-000000000001',
+    preferred_doctor_id: null,
     preferred_days: ['السبت', 'الأحد', 'اليوم'],
     preferred_time_start: '16:00',
     preferred_time_end: '18:00',
@@ -283,14 +259,13 @@ const INITIAL_WAITLIST: WaitlistEntry[] = [
     notes: 'تناسبها فترة بعد العصر وتفضل الحضور اليوم',
     created_at: '2026-10-31T01:25:00Z',
   },
-  // Candidate 3: Partial Match (Prefers Dr. Sarah, evening)
   {
     id: 'wl_03',
     clinic_id: CLINIC_ID,
     patient_name: 'عمر السليمان',
     patient_phone: '0563322114',
-    service_id: 'srv_cleaning',
-    preferred_doctor_id: 'doc_sarah', // Different doctor
+    service_id: 'c0000000-0000-0000-0000-000000000001',
+    preferred_doctor_id: 'b0000000-0000-0000-0000-000000000002',
     preferred_days: ['الاثنين', 'الثلاثاء'],
     preferred_time_start: '18:00',
     preferred_time_end: '21:00',
@@ -299,25 +274,7 @@ const INITIAL_WAITLIST: WaitlistEntry[] = [
     notes: 'يفضل د. سارة في المساء، لكن مستعد للحضور إن تعذر',
     created_at: '2026-10-30T16:00:00Z',
   },
-  // Candidate 4: Other service waitlist entry (Root canal)
-  {
-    id: 'wl_04',
-    clinic_id: CLINIC_ID,
-    patient_name: 'نورة الهذلي',
-    patient_phone: '0538844221',
-    service_id: 'srv_rootcanal',
-    preferred_doctor_id: 'doc_khalid',
-    preferred_days: ['الأحد', 'الاثنين'],
-    preferred_time_start: '16:00',
-    preferred_time_end: '20:00',
-    any_today: true,
-    status: 'waiting',
-    notes: 'حالة عصب طارئة',
-    created_at: '2026-10-31T00:30:00Z',
-  },
 ];
-
-const INITIAL_OFFERS: SlotOffer[] = [];
 
 const INITIAL_AUDIT_LOGS: RecoveryAuditLog[] = [
   {
@@ -334,34 +291,6 @@ const INITIAL_AUDIT_LOGS: RecoveryAuditLog[] = [
     timeToRecoverMinutes: 13,
     revenueSaved: 250,
   },
-  {
-    id: 'log_02',
-    appointmentId: 'appt_rec_02',
-    originalPatientName: 'ريم الرشيدي',
-    originalDoctorName: 'د. خالد العتيبي',
-    serviceName: 'حشو عصب وجذور متقدم',
-    appointmentTime: 'أمس 04:30 م',
-    cancelledAt: 'أمس 03:45 م',
-    recoveredAt: 'أمس 04:02 م',
-    recoveredPatientName: 'خالد المطيري',
-    recoveredPatientPhone: '0501199884',
-    timeToRecoverMinutes: 17,
-    revenueSaved: 850,
-  },
-  {
-    id: 'log_03',
-    appointmentId: 'appt_rec_03',
-    originalPatientName: 'عبدالله السعد',
-    originalDoctorName: 'د. سارة القحطاني',
-    serviceName: 'استشارة وفحص تقويم',
-    appointmentTime: '29 أكتوبر 05:00 م',
-    cancelledAt: '29 أكتوبر 04:10 م',
-    recoveredAt: '29 أكتوبر 04:22 م',
-    recoveredPatientName: 'مشاعل السبيعي',
-    recoveredPatientPhone: '0547788990',
-    timeToRecoverMinutes: 12,
-    revenueSaved: 350,
-  },
 ];
 
 const INITIAL_STATS: RecoveryStats = {
@@ -377,57 +306,220 @@ const INITIAL_STATS: RecoveryStats = {
 // ------------------------------------------------------------------------------
 
 export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [clinic] = useState<Clinic>(INITIAL_CLINIC);
-  const [staff] = useState<Staff>(INITIAL_STAFF);
+  const isDemoMode = !isSupabaseConfigured();
+
+  const [clinic, setClinic] = useState<Clinic>(INITIAL_CLINIC);
+  const [staff, setStaff] = useState<Staff>(INITIAL_STAFF);
   const [doctors, setDoctors] = useState<Doctor[]>(INITIAL_DOCTORS);
   const [services, setServices] = useState<Service[]>(INITIAL_SERVICES);
   const [appointments, setAppointments] = useState<Appointment[]>(INITIAL_APPOINTMENTS);
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>(INITIAL_WAITLIST);
-  const [slotOffers, setSlotOffers] = useState<SlotOffer[]>(INITIAL_OFFERS);
+  const [slotOffers, setSlotOffers] = useState<SlotOffer[]>([]);
   const [auditLogs, setAuditLogs] = useState<RecoveryAuditLog[]>(INITIAL_AUDIT_LOGS);
   const [stats, setStats] = useState<RecoveryStats>(INITIAL_STATS);
 
-  // Synchronize state with LocalStorage for persistence across tab refreshes during testing
-  useEffect(() => {
+  // Refresh live data from Supabase if connected
+  const refreshLiveClinicData = useCallback(async () => {
+    if (!isSupabaseConfigured()) return;
+    const supabase = createClient();
+    if (!supabase) return;
+
     try {
-      const saved = localStorage.getItem('slotcare_state_v1');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.appointments) setAppointments(parsed.appointments);
-        if (parsed.waitlist) setWaitlist(parsed.waitlist);
-        if (parsed.slotOffers) setSlotOffers(parsed.slotOffers);
-        if (parsed.auditLogs) setAuditLogs(parsed.auditLogs);
-        if (parsed.stats) setStats(parsed.stats);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const staffData = await clinicService.getStaffByUserId(user.id);
+      if (staffData) {
+        setStaff(staffData);
+        if (staffData.clinic) {
+          setClinic(staffData.clinic);
+        }
+        // Load doctors and services for this clinic
+        const [liveDoctors, liveServices] = await Promise.all([
+          clinicService.getDoctors(staffData.clinic_id),
+          clinicService.getServices(staffData.clinic_id),
+        ]);
+
+        if (liveDoctors.length > 0) setDoctors(liveDoctors);
+        if (liveServices.length > 0) setServices(liveServices);
       }
-    } catch {
-      // LocalStorage error fallback
+    } catch (err) {
+      console.warn('Error syncing with live Supabase:', err);
     }
   }, []);
 
+  // Sync state with LocalStorage for demo fallback and live initialization
+  useEffect(() => {
+    if (isDemoMode) {
+      try {
+        const saved = localStorage.getItem('slotcare_state_v1');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.clinic) setClinic(parsed.clinic);
+          if (parsed.staff) setStaff(parsed.staff);
+          if (parsed.doctors) setDoctors(parsed.doctors);
+          if (parsed.services) setServices(parsed.services);
+          if (parsed.appointments) setAppointments(parsed.appointments);
+          if (parsed.waitlist) setWaitlist(parsed.waitlist);
+          if (parsed.slotOffers) setSlotOffers(parsed.slotOffers);
+          if (parsed.auditLogs) setAuditLogs(parsed.auditLogs);
+          if (parsed.stats) setStats(parsed.stats);
+        }
+      } catch {
+        // ignore
+      }
+    } else {
+      refreshLiveClinicData();
+    }
+  }, [isDemoMode, refreshLiveClinicData]);
+
   const saveToStorage = (
-    newAppointments: Appointment[],
-    newWaitlist: WaitlistEntry[],
-    newOffers: SlotOffer[],
-    newAuditLogs: RecoveryAuditLog[],
-    newStats: RecoveryStats
+    c: Clinic,
+    d: Doctor[],
+    s: Service[],
+    appts: Appointment[],
+    wl: WaitlistEntry[],
+    offers: SlotOffer[],
+    logs: RecoveryAuditLog[],
+    st: RecoveryStats
   ) => {
-    try {
-      localStorage.setItem(
-        'slotcare_state_v1',
-        JSON.stringify({
-          appointments: newAppointments,
-          waitlist: newWaitlist,
-          slotOffers: newOffers,
-          auditLogs: newAuditLogs,
-          stats: newStats,
-        })
-      );
-    } catch {
-      // ignore
+    if (isDemoMode) {
+      try {
+        localStorage.setItem(
+          'slotcare_state_v1',
+          JSON.stringify({
+            clinic: c,
+            doctors: d,
+            services: s,
+            appointments: appts,
+            waitlist: wl,
+            slotOffers: offers,
+            auditLogs: logs,
+            stats: st,
+          })
+        );
+      } catch {
+        // ignore
+      }
     }
   };
 
-  // Cancel an active appointment and trigger recovery workflow
+  // Update Clinic Profile
+  const updateClinic = async (updates: Partial<Clinic>): Promise<{ success: boolean; error?: string }> => {
+    const updatedClinic = { ...clinic, ...updates };
+    setClinic(updatedClinic);
+
+    if (!isDemoMode) {
+      const res = await clinicService.updateClinicProfile(clinic.id, updates);
+      if (!res.success) return res;
+    }
+
+    saveToStorage(updatedClinic, doctors, services, appointments, waitlist, slotOffers, auditLogs, stats);
+    return { success: true };
+  };
+
+  // Doctor CRUD
+  const addDoctor = async (
+    doctorData: Omit<Doctor, 'id' | 'clinic_id' | 'created_at'>
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!isDemoMode) {
+      const res = await clinicService.createDoctor({
+        ...doctorData,
+        clinic_id: clinic.id,
+      });
+      if (!res.success || !res.data) {
+        return { success: false, error: res.error || 'فشل في إضافة الطبيب' };
+      }
+      const updated = [...doctors, res.data];
+      setDoctors(updated);
+      return { success: true };
+    }
+
+    const newDoc: Doctor = {
+      ...doctorData,
+      id: `doc_${Date.now()}`,
+      clinic_id: clinic.id,
+      created_at: new Date().toISOString(),
+    };
+    const updated = [...doctors, newDoc];
+    setDoctors(updated);
+    saveToStorage(clinic, updated, services, appointments, waitlist, slotOffers, auditLogs, stats);
+    return { success: true };
+  };
+
+  const editDoctor = async (
+    id: string,
+    updates: Partial<Doctor>
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!isDemoMode) {
+      const res = await clinicService.updateDoctor(id, updates);
+      if (!res.success) return res;
+    }
+
+    const updated = doctors.map((d) => (d.id === id ? { ...d, ...updates } : d));
+    setDoctors(updated);
+    saveToStorage(clinic, updated, services, appointments, waitlist, slotOffers, auditLogs, stats);
+    return { success: true };
+  };
+
+  // Service CRUD
+  const addService = async (
+    serviceData: Omit<Service, 'id' | 'clinic_id' | 'created_at'>
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!isDemoMode) {
+      const res = await clinicService.createService({
+        ...serviceData,
+        clinic_id: clinic.id,
+      });
+      if (!res.success || !res.data) {
+        return { success: false, error: res.error || 'فشل في إضافة الخدمة' };
+      }
+      const updated = [...services, res.data];
+      setServices(updated);
+      return { success: true };
+    }
+
+    const newSrv: Service = {
+      ...serviceData,
+      id: `srv_${Date.now()}`,
+      clinic_id: clinic.id,
+      created_at: new Date().toISOString(),
+    };
+    const updated = [...services, newSrv];
+    setServices(updated);
+    saveToStorage(clinic, doctors, updated, appointments, waitlist, slotOffers, auditLogs, stats);
+    return { success: true };
+  };
+
+  const editService = async (
+    id: string,
+    updates: Partial<Service>
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!isDemoMode) {
+      const res = await clinicService.updateService(id, updates);
+      if (!res.success) return res;
+    }
+
+    const updated = services.map((s) => (s.id === id ? { ...s, ...updates } : s));
+    setServices(updated);
+    saveToStorage(clinic, doctors, updated, appointments, waitlist, slotOffers, auditLogs, stats);
+    return { success: true };
+  };
+
+  // Sign Out Handler
+  const signOut = async () => {
+    if (!isDemoMode) {
+      const supabase = createClient();
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
+  };
+
+  // Appointments & Recovery workflows (Preserved from Phase 1)
   const cancelAppointment = (appointmentId: string) => {
     const updatedAppointments = appointments.map((a) => {
       if (a.id === appointmentId) {
@@ -450,59 +542,54 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     setAppointments(updatedAppointments);
     setStats(updatedStats);
-    saveToStorage(updatedAppointments, waitlist, slotOffers, auditLogs, updatedStats);
+    saveToStorage(clinic, doctors, services, updatedAppointments, waitlist, slotOffers, auditLogs, updatedStats);
   };
 
-  // Create new appointment
   const createAppointment = (
     data: Omit<Appointment, 'id' | 'clinic_id' | 'created_at'>
   ) => {
     const newAppt: Appointment = {
       ...data,
       id: `appt_${Date.now()}`,
-      clinic_id: CLINIC_ID,
+      clinic_id: clinic.id,
       created_at: new Date().toISOString(),
     };
     const updated = [newAppt, ...appointments];
     setAppointments(updated);
-    saveToStorage(updated, waitlist, slotOffers, auditLogs, stats);
+    saveToStorage(clinic, doctors, services, updated, waitlist, slotOffers, auditLogs, stats);
   };
 
-  // Add patient to smart waitlist
   const addToWaitlist = (
     data: Omit<WaitlistEntry, 'id' | 'clinic_id' | 'created_at' | 'status'>
   ) => {
     const newEntry: WaitlistEntry = {
       ...data,
       id: `wl_${Date.now()}`,
-      clinic_id: CLINIC_ID,
+      clinic_id: clinic.id,
       status: 'waiting',
       created_at: new Date().toISOString(),
     };
     const updated = [newEntry, ...waitlist];
     setWaitlist(updated);
-    saveToStorage(appointments, updated, slotOffers, auditLogs, stats);
+    saveToStorage(clinic, doctors, services, appointments, updated, slotOffers, auditLogs, stats);
   };
 
-  // Generate a secure one-time offer token and slot offer
   const generateSlotOffer = (appointmentId: string, waitlistId: string): SlotOffer => {
-    // Generate secure randomized token
     const randomHex = Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
     const token = `sc_${randomHex}`;
 
     const newOffer: SlotOffer = {
       id: `offer_${Date.now()}`,
-      clinic_id: CLINIC_ID,
+      clinic_id: clinic.id,
       appointment_id: appointmentId,
       waitlist_id: waitlistId,
       token,
       status: 'pending',
       sent_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 min expiry
+      expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
       created_at: new Date().toISOString(),
     };
 
-    // Update waitlist entry status to 'offered'
     const updatedWaitlist = waitlist.map((w) =>
       w.id === waitlistId ? { ...w, status: 'offered' as const } : w
     );
@@ -511,12 +598,11 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     setSlotOffers(updatedOffers);
     setWaitlist(updatedWaitlist);
-    saveToStorage(appointments, updatedWaitlist, updatedOffers, auditLogs, stats);
+    saveToStorage(clinic, doctors, services, appointments, updatedWaitlist, updatedOffers, auditLogs, stats);
 
     return newOffer;
   };
 
-  // Claim offer via patient mobile confirmation (Atomic simulation)
   const claimOffer = (token: string) => {
     const offer = slotOffers.find((o) => o.token === token);
     if (!offer) {
@@ -546,7 +632,6 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return { success: false, message: 'عذراً، تم حجز هذا الموعد بالفعل من قبل مريض آخر.' };
     }
 
-    // 1. Mark this offer as accepted and expire competing offers
     const updatedOffers = slotOffers.map((o) => {
       if (o.token === token) {
         return { ...o, status: 'accepted' as const, responded_at: new Date().toISOString() };
@@ -557,7 +642,6 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return o;
     });
 
-    // 2. Mark appointment as recovered with replacement patient
     const updatedAppointments = appointments.map((a) => {
       if (a.id === offer.appointment_id) {
         return {
@@ -571,7 +655,6 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return a;
     });
 
-    // 3. Mark waitlist entry as booked
     const updatedWaitlist = waitlist.map((w) => {
       if (w.id === offer.waitlist_id) {
         return { ...w, status: 'booked' as const };
@@ -579,7 +662,6 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return w;
     });
 
-    // 4. Calculate recovery audit log entry
     const doctor = doctors.find((d) => d.id === appt.doctor_id);
     const service = services.find((s) => s.id === appt.service_id);
     const timeToRecover = appt.cancelled_at
@@ -606,7 +688,6 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const updatedAuditLogs = [newLog, ...auditLogs];
 
-    // 5. Update stats
     const newRecoveredCount = stats.recoveredCount + 1;
     const updatedStats: RecoveryStats = {
       cancelledCount: stats.cancelledCount,
@@ -626,6 +707,9 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setStats(updatedStats);
 
     saveToStorage(
+      clinic,
+      doctors,
+      services,
       updatedAppointments,
       updatedWaitlist,
       updatedOffers,
@@ -641,7 +725,6 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   };
 
-  // Decline offer
   const declineOffer = (token: string) => {
     const offer = slotOffers.find((o) => o.token === token);
     if (!offer) {
@@ -654,19 +737,17 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         : o
     );
 
-    // Revert waitlist patient back to 'waiting'
     const updatedWaitlist = waitlist.map((w) =>
       w.id === offer.waitlist_id ? { ...w, status: 'waiting' as const } : w
     );
 
     setSlotOffers(updatedOffers);
     setWaitlist(updatedWaitlist);
-    saveToStorage(appointments, updatedWaitlist, updatedOffers, auditLogs, stats);
+    saveToStorage(clinic, doctors, services, appointments, updatedWaitlist, updatedOffers, auditLogs, stats);
 
     return { success: true, message: 'تم تسجيل اعتذارك، شكراً لتجاوبك.' };
   };
 
-  // Query offer by token
   const getOfferByToken = (token: string) => {
     const offer = slotOffers.find((o) => o.token === token);
     if (!offer) return null;
@@ -685,16 +766,19 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   };
 
-  // Reset demo data to default state
   const resetDemoData = () => {
     try {
       localStorage.removeItem('slotcare_state_v1');
     } catch {
       // ignore
     }
+    setClinic(INITIAL_CLINIC);
+    setStaff(INITIAL_STAFF);
+    setDoctors(INITIAL_DOCTORS);
+    setServices(INITIAL_SERVICES);
     setAppointments(INITIAL_APPOINTMENTS);
     setWaitlist(INITIAL_WAITLIST);
-    setSlotOffers(INITIAL_OFFERS);
+    setSlotOffers([]);
     setAuditLogs(INITIAL_AUDIT_LOGS);
     setStats(INITIAL_STATS);
   };
@@ -702,6 +786,7 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   return (
     <SlotCareContext.Provider
       value={{
+        isDemoMode,
         clinic,
         staff,
         doctors,
@@ -711,6 +796,13 @@ export const SlotCareProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         slotOffers,
         auditLogs,
         stats,
+        updateClinic,
+        addDoctor,
+        editDoctor,
+        addService,
+        editService,
+        signOut,
+        refreshLiveClinicData,
         cancelAppointment,
         createAppointment,
         addToWaitlist,

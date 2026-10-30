@@ -14,12 +14,13 @@ import {
   LogOut,
   ChevronLeft,
   Stethoscope,
+  ShieldCheck,
 } from 'lucide-react';
 import { useSlotCare } from '@/context/SlotCareContext';
 
 export const Sidebar: React.FC = () => {
   const pathname = usePathname();
-  const { clinic, staff, appointments } = useSlotCare();
+  const { clinic, staff, appointments, signOut, isDemoMode } = useSlotCare();
 
   // Count active cancelled slots ready for recovery
   const cancelledSlotsCount = appointments.filter((a) => a.status === 'cancelled').length;
@@ -64,6 +65,8 @@ export const Sidebar: React.FC = () => {
     },
   ];
 
+  const staffRoleLabel = staff.role === 'admin' ? 'مدير العيادة' : 'موظف استقبال معتمد';
+
   return (
     <aside className="w-64 bg-slate-900 text-slate-200 min-h-screen flex flex-col border-s border-slate-800 shrink-0">
       {/* Brand Header */}
@@ -85,12 +88,14 @@ export const Sidebar: React.FC = () => {
 
         {/* Current Active Clinic Badge */}
         <div className="mt-4 p-2.5 rounded-lg bg-slate-800/60 border border-slate-700/60 flex items-center gap-2.5">
-          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
           <div className="overflow-hidden">
-            <p className="text-xs font-semibold text-slate-100 truncate">{clinic.name}</p>
+            <p className="text-xs font-semibold text-slate-100 truncate" title={clinic.name}>
+              {clinic.name}
+            </p>
             <p className="text-[11px] text-slate-400 flex items-center gap-1">
               <Stethoscope className="w-3 h-3 text-teal-400" />
-              <span>4 أطباء أسنان متاحين</span>
+              <span>نظام عزل العيادات (RLS)</span>
             </p>
           </div>
         </div>
@@ -135,25 +140,25 @@ export const Sidebar: React.FC = () => {
         })}
       </nav>
 
-      {/* Staff Profile & Footer */}
+      {/* Staff Profile & Logout Footer */}
       <div className="p-4 border-t border-slate-800/80 bg-slate-900/60">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-xs text-teal-400">
+          <div className="flex items-center gap-2.5 overflow-hidden">
+            <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-xs text-teal-400 shrink-0">
               {staff.full_name.slice(0, 1)}
             </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-200">{staff.full_name}</p>
-              <p className="text-[10px] text-teal-400">موظفة استقبال معتمدة</p>
+            <div className="truncate">
+              <p className="text-xs font-semibold text-slate-200 truncate">{staff.full_name}</p>
+              <p className="text-[10px] text-teal-400 truncate">{staffRoleLabel}</p>
             </div>
           </div>
-          <Link
-            href="/login"
+          <button
+            onClick={() => signOut()}
             title="تسجيل الخروج"
-            className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-md transition-colors"
+            className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-md transition-colors shrink-0"
           >
             <LogOut className="w-4 h-4" />
-          </Link>
+          </button>
         </div>
       </div>
     </aside>
